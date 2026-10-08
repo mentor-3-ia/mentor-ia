@@ -5,49 +5,38 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 );
 
-const SYSTEM_PROMPT = `Eres Mentor-IA, un orientador vocacional empático y profesional especializado en el sistema educativo peruano.
-
-TU OBJETIVO:
-Ayudar a estudiantes de secundaria y recién graduados a descubrir su vocación y encontrar becas disponibles en Perú.
-
-FLUJO DE CONVERSACIÓN:
-1. Saluda con calidez y haz UNA pregunta a la vez.
-2. Haz preguntas basadas en el modelo RIASEC (Realista, Investigador, Artístico, Social, Emprendedor, Convencional) para identificar intereses. Máximo 5 preguntas.
-3. Cuando tengas suficiente información, identifica el perfil RIASEC predominante.
-4. Recomienda 2-3 carreras afines y explica brevemente por qué encajan.
-5. Presenta las becas compatibles usando EXCLUSIVAMENTE los datos que se te entregan en el contexto. NUNCA inventes becas, fechas ni requisitos.
-6. Si una beca tiene estado "cerrada", menciona que su convocatoria ya cerró y sugiere esperar la próxima. Si está "abierta" o "proxima", invita a postular.
-
-REGLAS ESTRICTAS:
-- Responde SIEMPRE en español, tono cálido y motivador.
-- UNA pregunta a la vez. No abrumes al estudiante.
-- NUNCA inventes información. Si no está en el contexto, di que no tienes ese dato y sugiere revisar pronabec.gob.pe.
-- No pidas datos sensibles (DNI, dirección exacta, datos bancarios).
-- Respuestas cortas: máximo 120 palabras por mensaje.`;
+const SYSTEM_PROMPT = `Eres Mentor-IA, un orientador vocacional empático y profesional especializado en el sistema educativo peruano. Ayuda a estudiantes a descubrir su vocación y encontrar becas en Perú. Haz UNA pregunta a la vez basada en el modelo RIASEC. Cuando identifiques el perfil, recomienda carreras y becas usando EXCLUSIVAMENTE los datos del contexto. NUNCA inventes becas, fechas ni requisitos. Responde en español, tono cálido, máximo 120 palabras.`;
 
 async function getBecas() {
   const { data, error } = await supabase.from('becas').select('*');
-  if (error) return [];
+  if (error) throw new Error('Supabase error: ' + error.message);
   return data || [];
 }
 
 function buildContext(becas) {
   if (!becas.length) return 'No hay becas en la base de datos.';
-  return 'BECAS DISPONIBLES EN LA BASE DE DATOS:\n' + becas.map(b =>
-    `- ${b.nombre} | Institución: ${b.institucion} | Carrera: ${b.carrera} | Requisitos: ${b.requisitos} | Fecha límite: ${b.fecha_limite} | Estado: ${b.estado} | Link: ${b.link}`
+  return 'BECAS DISPONIBLES:\n' + becas.map(b =>
+    `- ${b.nombre} | ${b.institucion} | ${b.carrera} | Requisitos: ${b.requisitos} | Fecha: ${b.fecha_limite} | Estado: ${b.estado} | Link: ${b.link}`
   ).join('\n');
 }
 
 export async function POST(req) {
   try {
     const { messages } = await req.json();
+
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const openrouterKey = process.env.OPENROUTER_API_KEY;
+
+    if (!supabaseUrl) throw new Error('Falta NEXT_PUBLIC_SUPABASE_URL');
+    if (!openrouterKey) throw new Error('Falta OPENROUTER_API_KEY');
+
     const becas = await getBecas();
     const context = buildContext(becas);
 
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        'Authorization': `Bearer ${openrouterKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -61,9 +50,16 @@ export async function POST(req) {
     });
 
     const data = await response.json();
-    const reply = data?.choices?.[0]?.message?.content || 'Lo siento, no pude procesar tu mensaje.';
+
+    if (!response.ok) {
+      throw new Error(`OpenRouter ${response.status}: ${JSON.stringify(data)}`);
+    }
+
+    const reply = data?.choices?.[0]?.message?.content;
+    if (!reply) throw new Error('Respuesta vacía de OpenRouter: ' + JSON.stringify(data));
+
     return Response.json({ reply });
   } catch (e) {
-    return Response.json({ reply: 'Error del servidor. Intenta de nuevo.' }, { status: 500 });
+    return Response.json({ reply: '⚠️ DIAGNÓSTICO: ' + e.message }, { status: 200 });
   }
 }
