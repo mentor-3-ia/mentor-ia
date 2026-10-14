@@ -16,7 +16,18 @@ REGLAS CRÍTICAS:
 6. Si una beca está "cerrada", dilo claramente. Si está "abierta" o "proxima", invita a postular.
 7. Responde en español, tono cálido, máximo 120 palabras.
 
+FORMATO OBLIGATORIO:
+Cuando recomiendes becas, al FINAL de tu mensaje (última línea) agrega un tag con los nombres EXACTOS de las becas que recomiendas, usando este formato literal:
+[[BECAS: Nombre exacto 1 | Nombre exacto 2]]
+
+Reglas del tag:
+- Solo incluye becas que aparezcan textualmente en el contexto.
+- Si no recomiendas ninguna beca, NO incluyas el tag.
+- El tag debe ir al final, en su propia línea.
+- Usa el nombre exacto tal como aparece en el contexto.
+
 DATOS DE CONTEXTO: Se te entrega la lista de becas disponibles. Si el estudiante no califica para ninguna por edad o grado, sugiere planificar para el futuro y menciona la beca más cercana.`;
+
 async function getBecas() {
   const { data, error } = await supabase.from('becas').select('*');
   if (error) throw new Error('Supabase error: ' + error.message);
@@ -30,18 +41,29 @@ function buildContext(becas) {
   ).join('\n');
 }
 
+function extraerBecas(texto, todasLasBecas) {
+  const match = texto.match(/\[\[BECAS:\s*(.+?)\]\]/s);
+  if (!match) return { textoLimpio: texto, becas: [] };
+
+  const nombres = match[1].split('|').map(n => n.trim().toLowerCase());
+  const textoLimpio = texto.replace(match[0], '').trim();
+
+  const becasEncontradas = todasLasBecas.filter(b =>
+    nombres.some(n => b.nombre.toLowerCase().includes(n) || n.includes(b.nombre.toLowerCase()))
+  );
+
+  return { textoLimpio, becas: becasEncontradas };
+}
+
 export async function POST(req) {
   try {
     const { messages } = await req.json();
 
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const openrouterKey = process.env.OPENROUTER_API_KEY;
-
-    if (!supabaseUrl) throw new Error('Falta NEXT_PUBLIC_SUPABASE_URL');
     if (!openrouterKey) throw new Error('Falta OPENROUTER_API_KEY');
 
-    const becas = await getBecas();
-    const context = buildContext(becas);
+    const todasLasBecas = await getBecas();
+    const context = buildContext(todasLasBecas);
 
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
@@ -58,18 +80,17 @@ export async function POST(req) {
         ],
       }),
     });
-    
+
     const data = await response.json();
+    if (!response.ok) throw new Error(`OpenRouter ${response.status}: ${JSON.stringify(data)}`);
 
-    if (!response.ok) {
-      throw new Error(`OpenRouter ${response.status}: ${JSON.stringify(data)}`);
-    }
+    const rawReply = data?.choices?.[0]?.message?.content;
+    if (!rawReply) throw new Error('Respuesta vacía de OpenRouter');
 
-    const reply = data?.choices?.[0]?.message?.content;
-    if (!reply) throw new Error('Respuesta vacía de OpenRouter: ' + JSON.stringify(data));
+    const { textoLimpio, becas } = extraerBecas(rawReply, todasLasBecas);
 
-    return Response.json({ reply });
+    return Response.json({ reply: textoLimpio, becas });
   } catch (e) {
-    return Response.json({ reply: '⚠️ DIAGNÓSTICO: ' + e.message }, { status: 200 });
+    return Response.json({ reply: '⚠️ ' + e.message, becas: [] }, { status: 200 });
   }
 }
